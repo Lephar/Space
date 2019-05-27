@@ -1,0 +1,6 @@
+out
+.vs
+
+*.spv
+*.exe
+*.o
