@@ -1,28 +1,55 @@
-﻿#include <iostream>
+﻿#include <chrono>
+#include <sstream>
+#include <iostream>
+#include <iomanip>
 #include <vulkan/vulkan.hpp>
 
-#define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
 GLFWwindow* window;
-int width, height;
+int32_t width, height;
+std::chrono::time_point<std::chrono::system_clock> epoch;
 
 vk::Instance instance;
+vk::DispatchLoaderDynamic loader;
 vk::DebugUtilsMessengerEXT messenger;
 vk::SurfaceKHR surface;
 
-void createWindow()
+std::string time()
 {
-	width = 800;
-	height = 600;
+	auto now = std::chrono::system_clock::now() - epoch;
+	auto sec = std::chrono::duration_cast<std::chrono::seconds>(now).count();
+	auto msec = std::chrono::duration_cast<std::chrono::milliseconds>(now).count() - sec * 1000;
+	auto usec = std::chrono::duration_cast<std::chrono::microseconds>(now).count() - msec * 1000 - sec * 1000000;
+
+	std::ostringstream stream;
+	stream << std::setfill('0') << std::setw(3) << sec << ':' << std::setw(3) << msec << ':' << std::setw(3) << usec;
+	return stream.str();
+}
+
+VKAPI_ATTR VkBool32 VKAPI_CALL messageCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type,
+	const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData)
+{
+	auto error = severity == VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+	std::cout << time() << (error ? " F:" : " S:") << pCallbackData->pMessage << std::endl;
+	return error ? VK_TRUE : VK_FALSE;
+}
+
+void initBase()
+{
+	epoch = std::chrono::system_clock::now();
 
 	glfwInit();
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-	window = glfwCreateWindow(width, height, "Space", NULL, NULL);
-}
 
-void createInstance()
-{
+	width = 800;
+	height = 600;
+
+	uint32_t extensionCount = 0;
+	const char** extensionNames = glfwGetRequiredInstanceExtensions(&extensionCount);
+	std::vector<const char*> layers{ "VK_LAYER_KHRONOS_validation" }, extensions{ extensionNames, extensionNames + extensionCount };
+	extensions.emplace_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+
 	vk::ApplicationInfo applicationInfo{
 		"Space",
 		VK_MAKE_VERSION(1, 0, 0),
@@ -31,37 +58,7 @@ void createInstance()
 		VK_API_VERSION_1_1
 	};
 
-	std::vector<const char*> layers{ "VK_LAYER_KHRONOS_validation" };
-
-	uint32_t extensionCount = 0;
-	const char** extensionNames = glfwGetRequiredInstanceExtensions(&extensionCount);
-	std::vector<const char*> extensions{ extensionNames, extensionNames + extensionCount };
-	extensions.emplace_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-
-	vk::InstanceCreateInfo instanceInfo{
-		vk::InstanceCreateFlags(),
-		&applicationInfo,
-		static_cast<uint32_t>(layers.size()),
-		layers.data(),
-		static_cast<uint32_t>(extensions.size()),
-		extensions.data()
-	};
-
-	instance = vk::createInstance(instanceInfo);
-}
-
-VKAPI_ATTR VkBool32 VKAPI_CALL messageCallback(
-	VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type,
-	const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData)
-{
-	std::cout << pCallbackData->pMessage << std::endl;
-	return false;
-}
-
-void registerMessenger()
-{
-	messenger = instance.createDebugUtilsMessengerEXT(
-		vk::DebugUtilsMessengerCreateInfoEXT{
+	vk::DebugUtilsMessengerCreateInfoEXT messengerInfo{
 			vk::DebugUtilsMessengerCreateFlagsEXT(),
 			vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose |
 			vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo |
@@ -72,30 +69,35 @@ void registerMessenger()
 			vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation,
 			messageCallback,
 			nullptr
-		},
-		nullptr,
-		vk::DispatchLoaderDynamic{
-			instance,
-			vkGetInstanceProcAddr
-		}
-	);
+	};
+
+	vk::InstanceCreateInfo instanceInfo{
+		vk::InstanceCreateFlags(),
+		&applicationInfo,
+		static_cast<uint32_t>(layers.size()),
+		layers.data(),
+		static_cast<uint32_t>(extensions.size()),
+		extensions.data(),
+	};
+	instanceInfo.setPNext(&messengerInfo);
+
+	instance = vk::createInstance(instanceInfo);
+	loader = vk::DispatchLoaderDynamic{ instance };
+	messenger = instance.createDebugUtilsMessengerEXT(messengerInfo, nullptr, loader);
+	window = glfwCreateWindow(width, height, "Space", NULL, NULL);
+	if (!window || glfwCreateWindowSurface(VkInstance(instance), window, NULL, (VkSurfaceKHR*)& surface) != VK_SUCCESS)
+		throw vk::SurfaceLostKHRError(nullptr);
 }
 
-void bindSurface()
+void pickDevice()
 {
-	VkSurfaceKHR temporarySurface;
-	if (glfwCreateWindowSurface(VkInstance(instance), window, NULL, &temporarySurface) == VK_SUCCESS)
-		surface = vk::SurfaceKHR{ temporarySurface };
-	else
-		throw vk::SurfaceLostKHRError(nullptr);
+
 }
 
 void setup()
 {
-	createWindow();
-	createInstance();
-	registerMessenger();
-	bindSurface();
+	initBase();
+	pickDevice();
 }
 
 void draw()
@@ -109,7 +111,7 @@ void draw()
 void clean()
 {
 	instance.destroySurfaceKHR(surface);
-	instance.destroyDebugUtilsMessengerEXT(messenger, nullptr, vk::DispatchLoaderDynamic{ instance, vkGetInstanceProcAddr });
+	instance.destroyDebugUtilsMessengerEXT(messenger, nullptr, loader);
 	instance.destroy();
 	glfwDestroyWindow(window);
 	glfwTerminate();
