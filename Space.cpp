@@ -9,10 +9,13 @@ vk::Instance instance;
 vk::DispatchLoaderDynamic loader;
 vk::DebugUtilsMessengerEXT messenger;
 vk::SurfaceKHR surface;
+uint32_t deviceIndex, queueIndex;
 vk::PhysicalDevice physicalDevice;
 vk::Device device;
-uint32_t queueIndex;
 vk::Queue queue;
+vk::SwapchainKHR swapchain;
+std::vector<vk::Image> swapchainImages;
+std::vector<vk::ImageView> swapchainViews;
 
 VKAPI_ATTR VkBool32 VKAPI_CALL messageCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type,
 	const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData)
@@ -21,7 +24,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL messageCallback(VkDebugUtilsMessageSeverityFlagBi
 	return VK_FALSE;
 }
 
-void initBase()
+void initializeBase()
 {
 	width = 800;
 	height = 600;
@@ -32,7 +35,9 @@ void initBase()
 
 	uint32_t extensionCount = 0;
 	const char** extensionNames = glfwGetRequiredInstanceExtensions(&extensionCount);
-	std::vector<const char*> layers{ "VK_LAYER_KHRONOS_validation" }, extensions{ extensionNames, extensionNames + extensionCount };
+
+	std::vector<const char*> layers{ "VK_LAYER_KHRONOS_validation" };
+	std::vector<const char*> extensions{ extensionNames, extensionNames + extensionCount };
 	extensions.emplace_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
 	vk::ApplicationInfo applicationInfo{
@@ -72,31 +77,11 @@ void initBase()
 	if (!window || glfwCreateWindowSurface(VkInstance(instance), window, NULL, (VkSurfaceKHR*)& surface) != VK_SUCCESS)
 		throw vk::SurfaceLostKHRError(nullptr);
 
-	auto devices = instance.enumeratePhysicalDevices();
+	deviceIndex = 0;
+	physicalDevice = instance.enumeratePhysicalDevices().at(deviceIndex);
+	physicalDevice.getQueueFamilyProperties();
 
-	for (auto& device : devices)
-	{
-		auto properties = device.getProperties();
-
-		if (properties.deviceType == vk::PhysicalDeviceType::eDiscreteGpu)
-		{
-			auto queueFamilies = device.getQueueFamilyProperties();
-
-			for (uint32_t i = 0; i < queueFamilies.size(); i++)
-			{
-				if (device.getSurfaceSupportKHR(i, surface) && (queueFamilies.at(i).queueFlags & vk::QueueFlagBits::eGraphics))
-				{
-					physicalDevice = device;
-					queueIndex = i;
-					break;
-				}
-			}
-		}
-
-		if (physicalDevice == device)
-			break;
-	}
-
+	queueIndex = 0;
 	float queuePriority = 1.0f;
 
 	vk::DeviceQueueCreateInfo queueInfo{
@@ -125,9 +110,68 @@ void initBase()
 	queue = device.getQueue(queueIndex, 0);
 }
 
+vk::ImageView createImageView(vk::Image image, uint32_t levels, vk::Format format, vk::ImageAspectFlags flags)
+{
+	vk::ImageViewCreateInfo viewInfo{
+		vk::ImageViewCreateFlags(),
+		image,
+		vk::ImageViewType::e2D,
+		format,
+		vk::ComponentMapping{
+			vk::ComponentSwizzle::eIdentity,
+			vk::ComponentSwizzle::eIdentity,
+			vk::ComponentSwizzle::eIdentity,
+			vk::ComponentSwizzle::eIdentity
+		},
+		vk::ImageSubresourceRange{
+			flags,
+			0,
+			levels,
+			0,
+			1,
+		}
+	};
+
+	return device.createImageView(viewInfo);
+}
+
+void createSwapchain()
+{
+	vk::SurfaceCapabilitiesKHR surfaceCapabilities = physicalDevice.getSurfaceCapabilitiesKHR(surface);
+	physicalDevice.getSurfaceFormatsKHR(surface);
+	physicalDevice.getSurfacePresentModesKHR(surface);
+	physicalDevice.getSurfaceSupportKHR(queueIndex, surface);
+
+	vk::SwapchainCreateInfoKHR swapchainInfo{
+		vk::SwapchainCreateFlagsKHR(),
+		surface,
+		surfaceCapabilities.minImageCount + 1,
+		vk::Format::eB8G8R8A8Unorm,
+		vk::ColorSpaceKHR::eSrgbNonlinear,
+		surfaceCapabilities.currentExtent,
+		1,
+		vk::ImageUsageFlagBits::eColorAttachment,
+		vk::SharingMode::eExclusive,
+		0,
+		0,
+		surfaceCapabilities.currentTransform,
+		vk::CompositeAlphaFlagBitsKHR::eOpaque,
+		vk::PresentModeKHR::eMailbox,
+		VK_TRUE,
+		nullptr
+	};
+
+	swapchain = device.createSwapchainKHR(swapchainInfo);
+	swapchainImages = device.getSwapchainImagesKHR(swapchain);
+	for (int32_t i = 0; i < swapchainImages.size(); i++)
+		swapchainViews.emplace_back(createImageView(swapchainImages.at(i),
+			1, vk::Format::eB8G8R8A8Unorm, vk::ImageAspectFlagBits::eColor));
+}
+
 void setup()
 {
-	initBase();
+	initializeBase();
+	createSwapchain();
 }
 
 void draw()
@@ -140,6 +184,9 @@ void draw()
 
 void clean()
 {
+	for (auto& swapchainView : swapchainViews)
+		device.destroyImageView(swapchainView);
+	device.destroySwapchainKHR(swapchain);
 	device.destroy();
 	instance.destroySurfaceKHR(surface);
 	instance.destroyDebugUtilsMessengerEXT(messenger, nullptr, loader);
