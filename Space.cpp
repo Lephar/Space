@@ -1,11 +1,10 @@
-﻿
-#include <fstream>
+﻿#include <fstream>
 #include <iostream>
 #include <vulkan/vulkan.hpp>
 #include <GLFW/glfw3.h>
 
 GLFWwindow* window;
-int32_t width, height;
+uint32_t width, height;
 
 vk::Instance instance;
 vk::DispatchLoaderDynamic loader;
@@ -19,10 +18,10 @@ vk::SwapchainKHR swapchain;
 vk::Format swapchainFormat;
 std::vector<vk::Image> swapchainImages;
 std::vector<vk::ImageView> swapchainViews;
-vk::ShaderModule vertexShader, fragmentShader;
 vk::RenderPass renderPass;
 vk::PipelineLayout pipelineLayout;
-vk::Pipeline graphicsPipeline;
+vk::Pipeline pipeline;
+std::vector<vk::Framebuffer> framebuffers;
 
 VKAPI_ATTR VkBool32 VKAPI_CALL messageCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
 	VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
@@ -39,7 +38,7 @@ void initializeBase()
 
 	glfwInit();
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-	window = glfwCreateWindow(width, height, "Space", NULL, NULL);
+	window = glfwCreateWindow(static_cast<int>(width), static_cast<int>(height), "Space", NULL, NULL);
 
 	uint32_t extensionCount = 0;
 	const char** extensionNames = glfwGetRequiredInstanceExtensions(&extensionCount);
@@ -281,8 +280,8 @@ void createGraphicsPipeline()
 			0
 		},
 		vk::Extent2D{
-			static_cast<uint32_t>(width),
-			static_cast<uint32_t>(height)
+			width,
+			height
 		}
 	};
 
@@ -356,7 +355,7 @@ void createGraphicsPipeline()
 
 	pipelineLayout = device.createPipelineLayout(pipelineLayoutInfo);
 
-	vertexShader = initializeShaderModule("data/vert.spv");
+	vk::ShaderModule vertexShader = initializeShaderModule("data/vert.spv");
 	vk::PipelineShaderStageCreateInfo vertexInfo{
 		vk::PipelineShaderStageCreateFlags(),
 		vk::ShaderStageFlagBits::eVertex,
@@ -365,7 +364,7 @@ void createGraphicsPipeline()
 		nullptr
 	};
 
-	fragmentShader = initializeShaderModule("data/frag.spv");
+	vk::ShaderModule fragmentShader = initializeShaderModule("data/frag.spv");
 	vk::PipelineShaderStageCreateInfo fragmentInfo{
 		vk::PipelineShaderStageCreateFlags(),
 		vk::ShaderStageFlagBits::eFragment,
@@ -399,9 +398,27 @@ void createGraphicsPipeline()
 		0
 	};
 
-	graphicsPipeline = device.createGraphicsPipeline(nullptr, graphicsPipelineInfo);
+	pipeline = device.createGraphicsPipeline(nullptr, graphicsPipelineInfo);
 	device.destroyShaderModule(fragmentShader);
 	device.destroyShaderModule(vertexShader);
+}
+
+void createFramebuffers()
+{
+	for (uint32_t i = 0; i < swapchainViews.size(); i++)
+	{
+		vk::FramebufferCreateInfo framebufferInfo{
+			vk::FramebufferCreateFlags(),
+			renderPass,
+			1,
+			&swapchainViews.at(i),
+			width,
+			height,
+			1
+		};
+
+		framebuffers.emplace_back(device.createFramebuffer(framebufferInfo));
+	}
 }
 
 void setup()
@@ -410,6 +427,7 @@ void setup()
 	createSwapchain();
 	createRenderPass();
 	createGraphicsPipeline();
+	createFramebuffers();
 }
 
 void draw()
@@ -422,7 +440,9 @@ void draw()
 
 void clean()
 {
-	device.destroyPipeline(graphicsPipeline);
+	for (auto& framebuffer : framebuffers)
+		device.destroyFramebuffer(framebuffer);
+	device.destroyPipeline(pipeline);
 	device.destroyPipelineLayout(pipelineLayout);
 	device.destroyRenderPass(renderPass);
 	for (auto& swapchainView : swapchainViews)
