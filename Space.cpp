@@ -1,4 +1,6 @@
-﻿#include <iostream>
+﻿
+#include <fstream>
+#include <iostream>
 #include <vulkan/vulkan.hpp>
 #include <GLFW/glfw3.h>
 
@@ -14,11 +16,17 @@ vk::PhysicalDevice physicalDevice;
 vk::Device device;
 vk::Queue queue;
 vk::SwapchainKHR swapchain;
+vk::Format swapchainFormat;
 std::vector<vk::Image> swapchainImages;
 std::vector<vk::ImageView> swapchainViews;
+vk::ShaderModule vertexShader, fragmentShader;
+vk::RenderPass renderPass;
+vk::PipelineLayout pipelineLayout;
+vk::Pipeline graphicsPipeline;
 
-VKAPI_ATTR VkBool32 VKAPI_CALL messageCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type,
-	const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData)
+VKAPI_ATTR VkBool32 VKAPI_CALL messageCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+	VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+	void* pUserData)
 {
 	std::cout << pCallbackData->pMessage << std::endl;
 	return VK_FALSE;
@@ -74,7 +82,8 @@ void initializeBase()
 	instance = vk::createInstance(instanceInfo);
 	loader = vk::DispatchLoaderDynamic{ instance };
 	messenger = instance.createDebugUtilsMessengerEXT(messengerInfo, nullptr, loader);
-	if (!window || glfwCreateWindowSurface(VkInstance(instance), window, NULL, (VkSurfaceKHR*)& surface) != VK_SUCCESS)
+	if (!window || glfwCreateWindowSurface(VkInstance(instance), window, NULL, (VkSurfaceKHR*)& surface)
+		!= VK_SUCCESS)
 		throw vk::SurfaceLostKHRError(nullptr);
 
 	deviceIndex = 0;
@@ -137,16 +146,27 @@ vk::ImageView createImageView(vk::Image image, uint32_t levels, vk::Format forma
 
 void createSwapchain()
 {
-	vk::SurfaceCapabilitiesKHR surfaceCapabilities = physicalDevice.getSurfaceCapabilitiesKHR(surface);
+	auto surfaceCapabilities = physicalDevice.getSurfaceCapabilitiesKHR(surface);
+	auto presentModes = physicalDevice.getSurfacePresentModesKHR(surface);
 	physicalDevice.getSurfaceFormatsKHR(surface);
-	physicalDevice.getSurfacePresentModesKHR(surface);
 	physicalDevice.getSurfaceSupportKHR(queueIndex, surface);
+
+	width = std::clamp(surfaceCapabilities.currentExtent.width,
+		surfaceCapabilities.minImageExtent.width, surfaceCapabilities.maxImageExtent.width);
+	height = std::clamp(surfaceCapabilities.currentExtent.height,
+		surfaceCapabilities.minImageExtent.height, surfaceCapabilities.maxImageExtent.height);
+
+	bool mailbox = false;
+	for (auto& presentMode : presentModes)
+		if (presentMode == vk::PresentModeKHR::eMailbox)
+			mailbox = true;
+	swapchainFormat = vk::Format::eB8G8R8A8Unorm;
 
 	vk::SwapchainCreateInfoKHR swapchainInfo{
 		vk::SwapchainCreateFlagsKHR(),
 		surface,
 		surfaceCapabilities.minImageCount + 1,
-		vk::Format::eB8G8R8A8Unorm,
+		swapchainFormat,
 		vk::ColorSpaceKHR::eSrgbNonlinear,
 		surfaceCapabilities.currentExtent,
 		1,
@@ -156,7 +176,7 @@ void createSwapchain()
 		0,
 		surfaceCapabilities.currentTransform,
 		vk::CompositeAlphaFlagBitsKHR::eOpaque,
-		vk::PresentModeKHR::eMailbox,
+		mailbox ? vk::PresentModeKHR::eMailbox : vk::PresentModeKHR::eImmediate,
 		VK_TRUE,
 		nullptr
 	};
@@ -165,13 +185,231 @@ void createSwapchain()
 	swapchainImages = device.getSwapchainImagesKHR(swapchain);
 	for (int32_t i = 0; i < swapchainImages.size(); i++)
 		swapchainViews.emplace_back(createImageView(swapchainImages.at(i),
-			1, vk::Format::eB8G8R8A8Unorm, vk::ImageAspectFlagBits::eColor));
+			1, swapchainFormat, vk::ImageAspectFlagBits::eColor));
+}
+
+void createRenderPass()
+{
+	vk::AttachmentReference colorReference{
+		0,
+		vk::ImageLayout::eColorAttachmentOptimal
+	};
+
+	vk::AttachmentDescription colorAttachment{
+		vk::AttachmentDescriptionFlags(),
+		swapchainFormat,
+		vk::SampleCountFlagBits::e1,
+		vk::AttachmentLoadOp::eClear,
+		vk::AttachmentStoreOp::eStore,
+		vk::AttachmentLoadOp::eDontCare,
+		vk::AttachmentStoreOp::eDontCare,
+		vk::ImageLayout::eUndefined,
+		vk::ImageLayout::ePresentSrcKHR
+	};
+
+	vk::SubpassDescription subpass{
+		vk::SubpassDescriptionFlags(),
+		vk::PipelineBindPoint::eGraphics,
+		0,
+		nullptr,
+		1,
+		&colorReference,
+		nullptr,
+		nullptr,
+		0,
+		nullptr
+	};
+
+	vk::RenderPassCreateInfo renderPassInfo{
+		vk::RenderPassCreateFlags(),
+		1,
+		&colorAttachment,
+		1,
+		&subpass,
+		0,
+		nullptr
+	};
+
+	renderPass = device.createRenderPass(renderPassInfo);
+}
+
+vk::ShaderModule initializeShaderModule(std::string path)
+{
+	std::ifstream file(path, std::ios::binary | std::ios::ate);
+	auto size = file.tellg();
+	file.seekg(0, std::ios::beg);
+	std::vector<uint32_t> data(size / sizeof(uint32_t));
+	file.read(reinterpret_cast<char*>(data.data()), size);
+
+	vk::ShaderModuleCreateInfo shaderInfo{
+		vk::ShaderModuleCreateFlags(),
+		static_cast<size_t>(size),
+		data.data()
+	};
+
+	return device.createShaderModule(shaderInfo);
+}
+
+void createGraphicsPipeline()
+{
+	vk::PipelineVertexInputStateCreateInfo vertexInputInfo{
+		vk::PipelineVertexInputStateCreateFlags(),
+		0,
+		nullptr,
+		0,
+		nullptr
+	};
+
+	vk::PipelineInputAssemblyStateCreateInfo inputAssemblyInfo{
+		vk::PipelineInputAssemblyStateCreateFlags(),
+		vk::PrimitiveTopology::eTriangleList,
+		VK_FALSE
+	};
+
+	vk::Viewport viewport{
+		0.0f,
+		0.0f,
+		static_cast<float>(width),
+		static_cast<float>(height),
+		0.0f,
+		1.0f
+	};
+
+	vk::Rect2D scissor{
+		vk::Offset2D{
+			0,
+			0
+		},
+		vk::Extent2D{
+			static_cast<uint32_t>(width),
+			static_cast<uint32_t>(height)
+		}
+	};
+
+	vk::PipelineViewportStateCreateInfo viewportInfo{
+		vk::PipelineViewportStateCreateFlags(),
+		1,
+		&viewport,
+		1,
+		&scissor
+	};
+
+	vk::PipelineRasterizationStateCreateInfo rasterizerInfo{
+		vk::PipelineRasterizationStateCreateFlags(),
+		VK_FALSE,
+		VK_FALSE,
+		vk::PolygonMode::eLine,
+		vk::CullModeFlagBits::eBack,
+		vk::FrontFace::eClockwise,
+		VK_FALSE,
+		0.0f,
+		0.0f,
+		0.0f,
+		1.0f
+	};
+
+	vk::PipelineMultisampleStateCreateInfo multisamplingInfo{
+		vk::PipelineMultisampleStateCreateFlags(),
+		vk::SampleCountFlagBits::e1,
+		VK_FALSE,
+		0.0f,
+		nullptr,
+		VK_FALSE,
+		VK_FALSE
+	};
+
+	vk::PipelineColorBlendAttachmentState colorBlending{
+		VK_FALSE,
+		vk::BlendFactor::eZero,
+		vk::BlendFactor::eOne,
+		vk::BlendOp::eAdd,
+		vk::BlendFactor::eZero,
+		vk::BlendFactor::eOne,
+		vk::BlendOp::eAdd,
+		vk::ColorComponentFlagBits::eR |
+		vk::ColorComponentFlagBits::eG |
+		vk::ColorComponentFlagBits::eB |
+		vk::ColorComponentFlagBits::eA,
+	};
+
+	vk::PipelineColorBlendStateCreateInfo colorBlendInfo{
+		vk::PipelineColorBlendStateCreateFlags(),
+		VK_FALSE,
+		vk::LogicOp::eClear,
+		1,
+		&colorBlending,
+		std::array<float, 4>{
+			0,
+			0,
+			0,
+			0
+		}
+	};
+
+	vk::PipelineLayoutCreateInfo pipelineLayoutInfo{
+		vk::PipelineLayoutCreateFlags(),
+		0,
+		nullptr,
+		0,
+		nullptr
+	};
+
+	pipelineLayout = device.createPipelineLayout(pipelineLayoutInfo);
+
+	vertexShader = initializeShaderModule("data/vert.spv");
+	vk::PipelineShaderStageCreateInfo vertexInfo{
+		vk::PipelineShaderStageCreateFlags(),
+		vk::ShaderStageFlagBits::eVertex,
+		vertexShader,
+		"main",
+		nullptr
+	};
+
+	fragmentShader = initializeShaderModule("data/frag.spv");
+	vk::PipelineShaderStageCreateInfo fragmentInfo{
+		vk::PipelineShaderStageCreateFlags(),
+		vk::ShaderStageFlagBits::eFragment,
+		fragmentShader,
+		"main",
+		nullptr
+	};
+
+	std::array<vk::PipelineShaderStageCreateInfo, 2> shaderStages{
+		vertexInfo,
+		fragmentInfo
+	};
+
+	vk::GraphicsPipelineCreateInfo graphicsPipelineInfo{
+		vk::PipelineCreateFlags(),
+		static_cast<uint32_t>(shaderStages.size()),
+		shaderStages.data(),
+		&vertexInputInfo,
+		&inputAssemblyInfo,
+		nullptr,
+		&viewportInfo,
+		&rasterizerInfo,
+		&multisamplingInfo,
+		nullptr,
+		&colorBlendInfo,
+		nullptr,
+		pipelineLayout,
+		renderPass,
+		0,
+		nullptr,
+		0
+	};
+
+	graphicsPipeline = device.createGraphicsPipeline(nullptr, graphicsPipelineInfo);
+	device.destroyShaderModule(fragmentShader);
+	device.destroyShaderModule(vertexShader);
 }
 
 void setup()
 {
 	initializeBase();
 	createSwapchain();
+	createRenderPass();
+	createGraphicsPipeline();
 }
 
 void draw()
@@ -184,6 +422,9 @@ void draw()
 
 void clean()
 {
+	device.destroyPipeline(graphicsPipeline);
+	device.destroyPipelineLayout(pipelineLayout);
+	device.destroyRenderPass(renderPass);
 	for (auto& swapchainView : swapchainViews)
 		device.destroyImageView(swapchainView);
 	device.destroySwapchainKHR(swapchain);

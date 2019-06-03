@@ -13,4 +13,4 @@ add_custom_command(OUTPUT ${PROJECT_SOURCE_DIR}/data/vert.spv COMMAND glslc.exe 
 add_custom_command(OUTPUT ${PROJECT_SOURCE_DIR}/data/frag.spv COMMAND glslc.exe ${PROJECT_SOURCE_DIR}/shaders/shader.frag -o ${PROJECT_SOURCE_DIR}/data/frag.spv -O)
 add_custom_target(Shaders DEPENDS ${PROJECT_SOURCE_DIR}/data/vert.spv ${PROJECT_SOURCE_DIR}/data/frag.spv)
 
-file(COPY ${PROJECT_SOURCE_DIR}/data DESTINATION ${PROJECT_BINARY_DIR})
+file(COPY ${PROJECT_SOURCE_DIR}/data DESTINATION ${PROJECT_BINARY_DIR}/)
