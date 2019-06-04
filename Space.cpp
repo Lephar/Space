@@ -24,6 +24,9 @@ vk::Pipeline pipeline;
 std::vector<vk::Framebuffer> framebuffers;
 vk::CommandPool commandPool;
 std::vector<vk::CommandBuffer> commandBuffers;
+uint32_t syncLimit;
+std::vector<vk::Fence> frameFences;
+std::vector<vk::Semaphore> imageSemaphores, renderSemaphores;
 
 VKAPI_ATTR VkBool32 VKAPI_CALL messageCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
 	VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
@@ -44,7 +47,7 @@ void initializeBase()
 
 	glfwInit();
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-	window = glfwCreateWindow(static_cast<int>(width), static_cast<int>(height), "Space", NULL, NULL);
+	window = glfwCreateWindow(width, height, "Space", NULL, NULL);
 
 	uint32_t extensionCount = 0;
 	const char** extensionNames = glfwGetRequiredInstanceExtensions(&extensionCount);
@@ -87,8 +90,7 @@ void initializeBase()
 	instance = vk::createInstance(instanceInfo);
 	loader = vk::DispatchLoaderDynamic{ instance };
 	messenger = instance.createDebugUtilsMessengerEXT(messengerInfo, nullptr, loader);
-	if (!window || glfwCreateWindowSurface(VkInstance(instance), window, NULL, (VkSurfaceKHR*)& surface)
-		!= VK_SUCCESS)
+	if (glfwCreateWindowSurface(VkInstance(instance), window, NULL, (VkSurfaceKHR*)& surface) != VK_SUCCESS)
 		throw vk::SurfaceLostKHRError(nullptr);
 
 	deviceIndex = 0;
@@ -108,6 +110,7 @@ void initializeBase()
 	std::vector<const char*> deviceExtensions{ VK_KHR_SWAPCHAIN_EXTENSION_NAME };
 	vk::PhysicalDeviceFeatures deviceFeatures{};
 	deviceFeatures.fillModeNonSolid = VK_TRUE;
+	deviceFeatures.wideLines = VK_TRUE;
 
 	vk::DeviceCreateInfo deviceInfo{
 		vk::DeviceCreateFlags(),
@@ -173,7 +176,10 @@ void createSwapchain()
 		surfaceCapabilities.minImageCount + 1,
 		swapchainFormat,
 		vk::ColorSpaceKHR::eSrgbNonlinear,
-		surfaceCapabilities.currentExtent,
+		vk::Extent2D{
+			width,
+			height
+		},
 		1,
 		vk::ImageUsageFlagBits::eColorAttachment,
 		vk::SharingMode::eExclusive,
@@ -225,14 +231,25 @@ void createRenderPass()
 		nullptr
 	};
 
+	vk::SubpassDependency dependency{
+		VK_SUBPASS_EXTERNAL,
+		0,
+		vk::PipelineStageFlagBits::eColorAttachmentOutput,
+		vk::PipelineStageFlagBits::eColorAttachmentOutput,
+		vk::AccessFlags(),
+		vk::AccessFlagBits::eColorAttachmentRead |
+		vk::AccessFlagBits::eColorAttachmentWrite,
+		vk::DependencyFlags()
+	};
+
 	vk::RenderPassCreateInfo renderPassInfo{
 		vk::RenderPassCreateFlags(),
 		1,
 		&colorAttachment,
 		1,
 		&subpass,
-		0,
-		nullptr
+		1,
+		&dependency
 	};
 
 	renderPass = device.createRenderPass(renderPassInfo);
@@ -310,7 +327,7 @@ void createGraphicsPipeline()
 		0.0f,
 		0.0f,
 		0.0f,
-		1.0f
+		2.0f
 	};
 
 	vk::PipelineMultisampleStateCreateInfo multisamplingInfo{
@@ -435,8 +452,6 @@ void createCommandPool()
 	};
 
 	commandPool = device.createCommandPool(poolInfo);
-
-
 }
 
 void createCommandBuffers()
@@ -493,6 +508,26 @@ void createCommandBuffers()
 	}
 }
 
+void createSyncObject()
+{
+	syncLimit = 2;
+
+	vk::FenceCreateInfo fenceInfo{
+		vk::FenceCreateFlagBits::eSignaled
+	};
+
+	vk::SemaphoreCreateInfo semaphoreInfo{
+		vk::SemaphoreCreateFlags()
+	};
+
+	for (uint32_t i = 0; i < syncLimit; i++)
+	{
+		frameFences.emplace_back(device.createFence(fenceInfo));
+		imageSemaphores.emplace_back(device.createSemaphore(semaphoreInfo));
+		renderSemaphores.emplace_back(device.createSemaphore(semaphoreInfo));
+	}
+}
+
 void setup()
 {
 	initializeBase();
@@ -502,18 +537,63 @@ void setup()
 	createFramebuffers();
 	createCommandPool();
 	createCommandBuffers();
+	createSyncObject();
 }
 
 void draw()
 {
+	uint32_t imageIndex, syncIndex = 0;
+
 	while (!glfwWindowShouldClose(window))
 	{
 		glfwPollEvents();
+
+		device.waitForFences(1, &frameFences.at(syncIndex), VK_TRUE, std::numeric_limits<uint64_t>::max());
+		device.resetFences(1, &frameFences.at(syncIndex));
+
+		imageIndex = device.acquireNextImageKHR(swapchain, std::numeric_limits<uint64_t>::max(),
+			imageSemaphores.at(syncIndex), nullptr).value;
+
+		vk::PipelineStageFlags waitStages[]{
+			vk::PipelineStageFlagBits::eColorAttachmentOutput
+		};
+
+		vk::SubmitInfo submitInfo{
+			1,
+			&imageSemaphores.at(syncIndex),
+			waitStages,
+			1,
+			&commandBuffers.at(imageIndex),
+			1,
+			&renderSemaphores.at(syncIndex)
+		};
+
+		vk::PresentInfoKHR presentInfo{
+			1,
+			&renderSemaphores.at(syncIndex),
+			1,
+			&swapchain,
+			&imageIndex,
+			nullptr
+		};
+
+		queue.submit(1, &submitInfo, frameFences.at(syncIndex));
+		queue.presentKHR(presentInfo);
+
+		syncIndex = ++syncIndex % syncLimit;
 	}
+
+	device.waitIdle();
 }
 
 void clean()
 {
+	for (uint32_t i = 0; i < syncLimit; i++)
+	{
+		device.destroySemaphore(renderSemaphores.at(i));
+		device.destroySemaphore(imageSemaphores.at(i));
+		device.destroyFence(frameFences.at(i));
+	}
 	device.destroyCommandPool(commandPool);
 	for (auto& framebuffer : framebuffers)
 		device.destroyFramebuffer(framebuffer);
