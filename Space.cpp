@@ -1,4 +1,6 @@
-﻿#include <fstream>
+﻿// Ali Emre Gülcü - 2019
+
+#include <fstream>
 #include <iostream>
 #include <vulkan/vulkan.hpp>
 #include <GLFW/glfw3.h>
@@ -22,6 +24,8 @@ vk::RenderPass renderPass;
 vk::PipelineLayout pipelineLayout;
 vk::Pipeline pipeline;
 std::vector<vk::Framebuffer> framebuffers;
+vk::CommandPool commandPool;
+std::vector<vk::CommandBuffer> commandBuffers;
 
 VKAPI_ATTR VkBool32 VKAPI_CALL messageCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
 	VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
@@ -182,7 +186,7 @@ void createSwapchain()
 
 	swapchain = device.createSwapchainKHR(swapchainInfo);
 	swapchainImages = device.getSwapchainImagesKHR(swapchain);
-	for (int32_t i = 0; i < swapchainImages.size(); i++)
+	for (uint32_t i = 0; i < swapchainImages.size(); i++)
 		swapchainViews.emplace_back(createImageView(swapchainImages.at(i),
 			1, swapchainFormat, vk::ImageAspectFlagBits::eColor));
 }
@@ -421,6 +425,72 @@ void createFramebuffers()
 	}
 }
 
+void createCommandPool()
+{
+	vk::CommandPoolCreateInfo poolInfo{
+		vk::CommandPoolCreateFlags(),
+		queueIndex
+	};
+
+	commandPool = device.createCommandPool(poolInfo);
+
+
+}
+
+void createCommandBuffers()
+{
+	vk::CommandBufferAllocateInfo allocationInfo{
+		commandPool,
+		vk::CommandBufferLevel::ePrimary,
+		static_cast<uint32_t>(framebuffers.size())
+	};
+
+	commandBuffers = device.allocateCommandBuffers(allocationInfo);
+
+	for (uint32_t i = 0; i < commandBuffers.size(); i++)
+	{
+		vk::CommandBufferBeginInfo commandBufferBegin{
+			vk::CommandBufferUsageFlagBits::eSimultaneousUse,
+			nullptr
+		};
+
+		vk::ClearValue clearColor{
+			vk::ClearColorValue{
+				std::array<float, 4>{
+					0.0f,
+					0.0f,
+					0.0f,
+					1.0f
+				}
+			}
+		};
+
+		vk::RenderPassBeginInfo renderPassBegin{
+			renderPass,
+			framebuffers.at(i),
+			vk::Rect2D{
+				vk::Offset2D{
+					0,
+					0
+				},
+				vk::Extent2D{
+					width,
+					height
+				}
+			},
+			1,
+			&clearColor
+		};
+
+		commandBuffers.at(i).begin(commandBufferBegin);
+		commandBuffers.at(i).beginRenderPass(renderPassBegin, vk::SubpassContents::eInline);
+		commandBuffers.at(i).bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+		commandBuffers.at(i).draw(3, 1, 0, 0);
+		commandBuffers.at(i).endRenderPass();
+		commandBuffers.at(i).end();
+	}
+}
+
 void setup()
 {
 	initializeBase();
@@ -428,6 +498,8 @@ void setup()
 	createRenderPass();
 	createGraphicsPipeline();
 	createFramebuffers();
+	createCommandPool();
+	createCommandBuffers();
 }
 
 void draw()
@@ -440,6 +512,7 @@ void draw()
 
 void clean()
 {
+	device.destroyCommandPool(commandPool);
 	for (auto& framebuffer : framebuffers)
 		device.destroyFramebuffer(framebuffer);
 	device.destroyPipeline(pipeline);
