@@ -1,5 +1,3 @@
-﻿// Ali Emre Gülcü - 2019
-
 #include <fstream>
 #include <iostream>
 #include <vulkan/vulkan.hpp>
@@ -31,6 +29,10 @@ VKAPI_ATTR VkBool32 VKAPI_CALL messageCallback(VkDebugUtilsMessageSeverityFlagBi
 	VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
 	void* pUserData)
 {
+	(void)type;
+	(void)severity;
+	(void)pUserData;
+
 	std::cout << pCallbackData->pMessage << std::endl;
 	return VK_FALSE;
 }
