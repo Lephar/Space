@@ -14,15 +14,16 @@ uint32_t deviceIndex, queueIndex;
 vk::PhysicalDevice physicalDevice;
 vk::Device device;
 vk::Queue queue;
+vk::CommandPool commandPool;
 vk::SwapchainKHR swapchain;
 vk::Format swapchainFormat;
 std::vector<vk::Image> swapchainImages;
 std::vector<vk::ImageView> swapchainViews;
 vk::RenderPass renderPass;
+vk::ShaderModule vertexShader, fragmentShader;
 vk::PipelineLayout pipelineLayout;
 vk::Pipeline pipeline;
 std::vector<vk::Framebuffer> framebuffers;
-vk::CommandPool commandPool;
 std::vector<vk::CommandBuffer> commandBuffers;
 uint32_t syncLimit;
 std::vector<vk::Fence> frameFences;
@@ -47,14 +48,14 @@ void initializeBase()
 
 	glfwInit();
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-	window = glfwCreateWindow(width, height, "Space", NULL, NULL);
+	window = glfwCreateWindow(static_cast<int>(width), static_cast<int>(height), "Space", NULL, NULL);
 
 	uint32_t extensionCount = 0;
 	const char** extensionNames = glfwGetRequiredInstanceExtensions(&extensionCount);
 
 	std::vector<const char*> layers{ "VK_LAYER_KHRONOS_validation" };
 	std::vector<const char*> extensions{ extensionNames, extensionNames + extensionCount };
-	extensions.emplace_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+	extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
 	vk::ApplicationInfo applicationInfo{
 		"Space",
@@ -90,15 +91,17 @@ void initializeBase()
 	instance = vk::createInstance(instanceInfo);
 	loader = vk::DispatchLoaderDynamic{ instance };
 	messenger = instance.createDebugUtilsMessengerEXT(messengerInfo, nullptr, loader);
-	if (glfwCreateWindowSurface(VkInstance(instance), window, NULL, (VkSurfaceKHR*)& surface) != VK_SUCCESS)
+	if (!window || glfwCreateWindowSurface(static_cast<VkInstance>(instance), window,
+		NULL, reinterpret_cast<VkSurfaceKHR*>(&surface)) != VK_SUCCESS)
 		throw vk::SurfaceLostKHRError(nullptr);
 
 	deviceIndex = 0;
-	physicalDevice = instance.enumeratePhysicalDevices().at(deviceIndex);
-	physicalDevice.getQueueFamilyProperties();
-
 	queueIndex = 0;
 	float queuePriority = 1.0f;
+	std::vector<const char*> deviceExtensions{ VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+	vk::PhysicalDeviceFeatures deviceFeatures{};
+	deviceFeatures.fillModeNonSolid = VK_TRUE;
+	deviceFeatures.wideLines = VK_TRUE;
 
 	vk::DeviceQueueCreateInfo queueInfo{
 		vk::DeviceQueueCreateFlags(),
@@ -106,11 +109,6 @@ void initializeBase()
 		1,
 		&queuePriority
 	};
-
-	std::vector<const char*> deviceExtensions{ VK_KHR_SWAPCHAIN_EXTENSION_NAME };
-	vk::PhysicalDeviceFeatures deviceFeatures{};
-	deviceFeatures.fillModeNonSolid = VK_TRUE;
-	deviceFeatures.wideLines = VK_TRUE;
 
 	vk::DeviceCreateInfo deviceInfo{
 		vk::DeviceCreateFlags(),
@@ -123,30 +121,42 @@ void initializeBase()
 		&deviceFeatures
 	};
 
+	vk::CommandPoolCreateInfo poolInfo{
+		vk::CommandPoolCreateFlags(),
+		queueIndex
+	};
+
+	physicalDevice = instance.enumeratePhysicalDevices().at(deviceIndex);
+	physicalDevice.getQueueFamilyProperties();
 	device = physicalDevice.createDevice(deviceInfo);
 	queue = device.getQueue(queueIndex, 0);
+	commandPool = device.createCommandPool(poolInfo);
 }
 
 vk::ImageView createImageView(vk::Image image, uint32_t levels, vk::Format format, vk::ImageAspectFlags flags)
 {
+	vk::ComponentMapping components{
+		vk::ComponentSwizzle::eIdentity,
+		vk::ComponentSwizzle::eIdentity,
+		vk::ComponentSwizzle::eIdentity,
+		vk::ComponentSwizzle::eIdentity
+	};
+
+	vk::ImageSubresourceRange subresourceRange{
+		flags,
+		0,
+		levels,
+		0,
+		1,
+	};
+
 	vk::ImageViewCreateInfo viewInfo{
 		vk::ImageViewCreateFlags(),
 		image,
 		vk::ImageViewType::e2D,
 		format,
-		vk::ComponentMapping{
-			vk::ComponentSwizzle::eIdentity,
-			vk::ComponentSwizzle::eIdentity,
-			vk::ComponentSwizzle::eIdentity,
-			vk::ComponentSwizzle::eIdentity
-		},
-		vk::ImageSubresourceRange{
-			flags,
-			0,
-			levels,
-			0,
-			1,
-		}
+		components,
+		subresourceRange
 	};
 
 	return device.createImageView(viewInfo);
@@ -154,21 +164,18 @@ vk::ImageView createImageView(vk::Image image, uint32_t levels, vk::Format forma
 
 void createSwapchain()
 {
+	glfwGetFramebufferSize(window, reinterpret_cast<int*>(&width), reinterpret_cast<int*>(&height));
+
 	auto surfaceCapabilities = physicalDevice.getSurfaceCapabilitiesKHR(surface);
 	auto presentModes = physicalDevice.getSurfacePresentModesKHR(surface);
 	physicalDevice.getSurfaceFormatsKHR(surface);
 	physicalDevice.getSurfaceSupportKHR(queueIndex, surface);
 
-	width = std::clamp(surfaceCapabilities.currentExtent.width,
-		surfaceCapabilities.minImageExtent.width, surfaceCapabilities.maxImageExtent.width);
-	height = std::clamp(surfaceCapabilities.currentExtent.height,
-		surfaceCapabilities.minImageExtent.height, surfaceCapabilities.maxImageExtent.height);
-
+	swapchainFormat = vk::Format::eB8G8R8A8Unorm;
 	bool mailbox = false;
 	for (auto& presentMode : presentModes)
 		if (presentMode == vk::PresentModeKHR::eMailbox)
 			mailbox = true;
-	swapchainFormat = vk::Format::eB8G8R8A8Unorm;
 
 	vk::SwapchainCreateInfoKHR swapchainInfo{
 		vk::SwapchainCreateFlagsKHR(),
@@ -194,9 +201,10 @@ void createSwapchain()
 
 	swapchain = device.createSwapchainKHR(swapchainInfo);
 	swapchainImages = device.getSwapchainImagesKHR(swapchain);
-	for (uint32_t i = 0; i < swapchainImages.size(); i++)
-		swapchainViews.emplace_back(createImageView(swapchainImages.at(i),
-			1, swapchainFormat, vk::ImageAspectFlagBits::eColor));
+	swapchainViews.resize(swapchainImages.size());
+	for (uint32_t i = 0; i < swapchainViews.size(); i++)
+		swapchainViews.at(i) = createImageView(swapchainImages.at(i),
+			1, swapchainFormat, vk::ImageAspectFlagBits::eColor);
 }
 
 void createRenderPass()
@@ -255,7 +263,7 @@ void createRenderPass()
 	renderPass = device.createRenderPass(renderPassInfo);
 }
 
-vk::ShaderModule initializeShaderModule(std::string path)
+vk::ShaderModule loadShader(std::string path)
 {
 	std::ifstream file(path, std::ios::binary | std::ios::ate);
 	auto size = file.tellg();
@@ -270,6 +278,12 @@ vk::ShaderModule initializeShaderModule(std::string path)
 	};
 
 	return device.createShaderModule(shaderInfo);
+}
+
+void createShaderModules()
+{
+	vertexShader = loadShader("data/vert.spv");
+	fragmentShader = loadShader("data/frag.spv");
 }
 
 void createGraphicsPipeline()
@@ -378,7 +392,6 @@ void createGraphicsPipeline()
 
 	pipelineLayout = device.createPipelineLayout(pipelineLayoutInfo);
 
-	vk::ShaderModule vertexShader = initializeShaderModule("data/vert.spv");
 	vk::PipelineShaderStageCreateInfo vertexInfo{
 		vk::PipelineShaderStageCreateFlags(),
 		vk::ShaderStageFlagBits::eVertex,
@@ -387,7 +400,6 @@ void createGraphicsPipeline()
 		nullptr
 	};
 
-	vk::ShaderModule fragmentShader = initializeShaderModule("data/frag.spv");
 	vk::PipelineShaderStageCreateInfo fragmentInfo{
 		vk::PipelineShaderStageCreateFlags(),
 		vk::ShaderStageFlagBits::eFragment,
@@ -422,13 +434,13 @@ void createGraphicsPipeline()
 	};
 
 	pipeline = device.createGraphicsPipeline(nullptr, graphicsPipelineInfo);
-	device.destroyShaderModule(fragmentShader);
-	device.destroyShaderModule(vertexShader);
 }
 
 void createFramebuffers()
 {
-	for (uint32_t i = 0; i < swapchainViews.size(); i++)
+	framebuffers.resize(swapchainViews.size());
+
+	for (uint32_t i = 0; i < framebuffers.size(); i++)
 	{
 		vk::FramebufferCreateInfo framebufferInfo{
 			vk::FramebufferCreateFlags(),
@@ -440,18 +452,8 @@ void createFramebuffers()
 			1
 		};
 
-		framebuffers.emplace_back(device.createFramebuffer(framebufferInfo));
+		framebuffers.at(i) = device.createFramebuffer(framebufferInfo);
 	}
-}
-
-void createCommandPool()
-{
-	vk::CommandPoolCreateInfo poolInfo{
-		vk::CommandPoolCreateFlags(),
-		queueIndex
-	};
-
-	commandPool = device.createCommandPool(poolInfo);
 }
 
 void createCommandBuffers()
@@ -482,19 +484,21 @@ void createCommandBuffers()
 			}
 		};
 
+		vk::Rect2D renderArea{
+			vk::Offset2D{
+				0,
+				0
+			},
+			vk::Extent2D{
+				width,
+				height
+			}
+		};
+
 		vk::RenderPassBeginInfo renderPassBegin{
 			renderPass,
 			framebuffers.at(i),
-			vk::Rect2D{
-				vk::Offset2D{
-					0,
-					0
-				},
-				vk::Extent2D{
-					width,
-					height
-				}
-			},
+			renderArea,
 			1,
 			&clearColor
 		};
@@ -511,6 +515,9 @@ void createCommandBuffers()
 void createSyncObject()
 {
 	syncLimit = 2;
+	frameFences.resize(syncLimit);
+	imageSemaphores.resize(syncLimit);
+	renderSemaphores.resize(syncLimit);
 
 	vk::FenceCreateInfo fenceInfo{
 		vk::FenceCreateFlagBits::eSignaled
@@ -522,10 +529,34 @@ void createSyncObject()
 
 	for (uint32_t i = 0; i < syncLimit; i++)
 	{
-		frameFences.emplace_back(device.createFence(fenceInfo));
-		imageSemaphores.emplace_back(device.createSemaphore(semaphoreInfo));
-		renderSemaphores.emplace_back(device.createSemaphore(semaphoreInfo));
+		frameFences.at(i) = device.createFence(fenceInfo);
+		imageSemaphores.at(i) = device.createSemaphore(semaphoreInfo);
+		renderSemaphores.at(i) = device.createSemaphore(semaphoreInfo);
 	}
+}
+
+void cleanupSwapchain()
+{
+	device.freeCommandBuffers(commandPool, commandBuffers.size(), commandBuffers.data());
+	for (auto& framebuffer : framebuffers)
+		device.destroyFramebuffer(framebuffer);
+	device.destroyPipeline(pipeline);
+	device.destroyPipelineLayout(pipelineLayout);
+	device.destroyRenderPass(renderPass);
+	for (auto& swapchainView : swapchainViews)
+		device.destroyImageView(swapchainView);
+	device.destroySwapchainKHR(swapchain);
+}
+
+void recreateSwapchain()
+{
+	device.waitIdle();
+	cleanupSwapchain();
+	createSwapchain();
+	createRenderPass();
+	createGraphicsPipeline();
+	createFramebuffers();
+	createCommandBuffers();
 }
 
 void setup()
@@ -533,11 +564,31 @@ void setup()
 	initializeBase();
 	createSwapchain();
 	createRenderPass();
+	createShaderModules();
 	createGraphicsPipeline();
 	createFramebuffers();
-	createCommandPool();
 	createCommandBuffers();
 	createSyncObject();
+}
+
+void clean()
+{
+	cleanupSwapchain();
+	device.destroyShaderModule(fragmentShader);
+	device.destroyShaderModule(vertexShader);
+	for (uint32_t i = 0; i < syncLimit; i++)
+	{
+		device.destroySemaphore(renderSemaphores.at(i));
+		device.destroySemaphore(imageSemaphores.at(i));
+		device.destroyFence(frameFences.at(i));
+	}
+	device.destroyCommandPool(commandPool);
+	device.destroy();
+	instance.destroySurfaceKHR(surface);
+	instance.destroyDebugUtilsMessengerEXT(messenger, nullptr, loader);
+	instance.destroy();
+	glfwDestroyWindow(window);
+	glfwTerminate();
 }
 
 void draw()
@@ -549,10 +600,17 @@ void draw()
 		glfwPollEvents();
 
 		device.waitForFences(1, &frameFences.at(syncIndex), VK_TRUE, std::numeric_limits<uint64_t>::max());
-		device.resetFences(1, &frameFences.at(syncIndex));
+		auto acquireResult = device.acquireNextImageKHR(swapchain, std::numeric_limits<uint64_t>::max(),
+			imageSemaphores.at(syncIndex), nullptr);
 
-		imageIndex = device.acquireNextImageKHR(swapchain, std::numeric_limits<uint64_t>::max(),
-			imageSemaphores.at(syncIndex), nullptr).value;
+		if (acquireResult.result == vk::Result::eSuboptimalKHR ||
+			acquireResult.result == vk::Result::eErrorOutOfDateKHR)
+		{
+			recreateSwapchain();
+			continue;
+		}
+
+		imageIndex = acquireResult.value;
 
 		vk::PipelineStageFlags waitStages[]{
 			vk::PipelineStageFlagBits::eColorAttachmentOutput
@@ -577,38 +635,19 @@ void draw()
 			nullptr
 		};
 
+		device.resetFences(1, &frameFences.at(syncIndex));
 		queue.submit(1, &submitInfo, frameFences.at(syncIndex));
-		queue.presentKHR(presentInfo);
+
+		try {
+			queue.presentKHR(presentInfo);
+		} catch (vk::OutOfDateKHRError error) {
+			recreateSwapchain();
+		}
 
 		syncIndex = ++syncIndex % syncLimit;
 	}
 
 	device.waitIdle();
-}
-
-void clean()
-{
-	for (uint32_t i = 0; i < syncLimit; i++)
-	{
-		device.destroySemaphore(renderSemaphores.at(i));
-		device.destroySemaphore(imageSemaphores.at(i));
-		device.destroyFence(frameFences.at(i));
-	}
-	device.destroyCommandPool(commandPool);
-	for (auto& framebuffer : framebuffers)
-		device.destroyFramebuffer(framebuffer);
-	device.destroyPipeline(pipeline);
-	device.destroyPipelineLayout(pipelineLayout);
-	device.destroyRenderPass(renderPass);
-	for (auto& swapchainView : swapchainViews)
-		device.destroyImageView(swapchainView);
-	device.destroySwapchainKHR(swapchain);
-	device.destroy();
-	instance.destroySurfaceKHR(surface);
-	instance.destroyDebugUtilsMessengerEXT(messenger, nullptr, loader);
-	instance.destroy();
-	glfwDestroyWindow(window);
-	glfwTerminate();
 }
 
 int main()
