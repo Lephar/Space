@@ -1,7 +1,15 @@
 #include <fstream>
 #include <iostream>
 #include <vulkan/vulkan.hpp>
+
+#include <glm/glm.hpp>
 #include <GLFW/glfw3.h>
+
+struct Vertex
+{
+	glm::vec3 pos;
+	glm::vec3 col;
+};
 
 GLFWwindow* window;
 uint32_t width, height;
@@ -17,12 +25,16 @@ vk::Queue queue;
 vk::CommandPool commandPool;
 vk::SwapchainKHR swapchain;
 vk::Format swapchainFormat;
+vk::Rect2D swapchainArea;
 std::vector<vk::Image> swapchainImages;
 std::vector<vk::ImageView> swapchainViews;
 vk::RenderPass renderPass;
 vk::ShaderModule vertexShader, fragmentShader;
 vk::PipelineLayout pipelineLayout;
 vk::Pipeline pipeline;
+std::vector<Vertex> vertices;
+vk::Buffer vertexBuffer, indexBuffer;
+vk::DeviceMemory vertexMemory, indexMemory;
 std::vector<vk::Framebuffer> framebuffers;
 std::vector<vk::CommandBuffer> commandBuffers;
 uint32_t syncLimit;
@@ -172,6 +184,17 @@ void createSwapchain()
 	physicalDevice.getSurfaceSupportKHR(queueIndex, surface);
 
 	swapchainFormat = vk::Format::eB8G8R8A8Unorm;
+	swapchainArea = vk::Rect2D{
+		vk::Offset2D{
+			0,
+			0
+		},
+		vk::Extent2D{
+			width,
+			height
+		}
+	};
+	
 	bool mailbox = false;
 	for (auto& presentMode : presentModes)
 		if (presentMode == vk::PresentModeKHR::eMailbox)
@@ -183,10 +206,7 @@ void createSwapchain()
 		surfaceCapabilities.minImageCount + 1,
 		swapchainFormat,
 		vk::ColorSpaceKHR::eSrgbNonlinear,
-		vk::Extent2D{
-			width,
-			height
-		},
+		swapchainArea.extent,
 		1,
 		vk::ImageUsageFlagBits::eColorAttachment,
 		vk::SharingMode::eExclusive,
@@ -288,12 +308,33 @@ void createShaderModules()
 
 void createGraphicsPipeline()
 {
+	vk::VertexInputBindingDescription bindingDescription{
+		0,
+		sizeof(Vertex),
+		vk::VertexInputRate::eVertex
+	};
+
+	std::array<vk::VertexInputAttributeDescription, 2> attributeDescriptions{
+		vk::VertexInputAttributeDescription{
+			0,
+			0,
+			vk::Format::eR32G32B32Sfloat,
+			0
+		},
+		vk::VertexInputAttributeDescription{
+			1,
+			0,
+			vk::Format::eR32G32B32Sfloat,
+			sizeof(glm::vec3)
+		},
+	};
+
 	vk::PipelineVertexInputStateCreateInfo vertexInputInfo{
 		vk::PipelineVertexInputStateCreateFlags(),
-		0,
-		nullptr,
-		0,
-		nullptr
+		1,
+		&bindingDescription,
+		static_cast<uint32_t>(attributeDescriptions.size()),
+		attributeDescriptions.data()
 	};
 
 	vk::PipelineInputAssemblyStateCreateInfo inputAssemblyInfo{
@@ -311,23 +352,12 @@ void createGraphicsPipeline()
 		1.0f
 	};
 
-	vk::Rect2D scissor{
-		vk::Offset2D{
-			0,
-			0
-		},
-		vk::Extent2D{
-			width,
-			height
-		}
-	};
-
 	vk::PipelineViewportStateCreateInfo viewportInfo{
 		vk::PipelineViewportStateCreateFlags(),
 		1,
 		&viewport,
 		1,
-		&scissor
+		&swapchainArea
 	};
 
 	vk::PipelineRasterizationStateCreateInfo rasterizerInfo{
@@ -456,6 +486,50 @@ void createFramebuffers()
 	}
 }
 
+uint32_t getMemoryIndex(uint32_t filter, vk::MemoryPropertyFlags flags)
+{
+	auto memoryProperties = physicalDevice.getMemoryProperties();
+
+	for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; i++)
+		if ((filter & (1 << i)) && (flags & memoryProperties.memoryTypes[i].propertyFlags) == flags)
+			return i;
+
+	return std::numeric_limits<uint32_t>::max();
+}
+
+void createVertexBuffers()
+{
+	vertices.emplace_back(Vertex{ { 0.0f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f} });
+	vertices.emplace_back(Vertex{ { 0.5f,  0.5f, 0.0f}, {0.0f, 1.0f, 0.0f} });
+	vertices.emplace_back(Vertex{ {-0.5f,  0.5f, 0.0f}, {0.0f, 0.0f, 1.0f} });
+
+	vk::BufferCreateInfo bufferInfo{
+		vk::BufferCreateFlags(),
+		vertices.size() * sizeof(Vertex),
+		vk::BufferUsageFlagBits::eVertexBuffer,
+		vk::SharingMode::eExclusive,
+		0,
+		nullptr
+	};
+
+	vertexBuffer = device.createBuffer(bufferInfo);
+	auto memoryRequirements = device.getBufferMemoryRequirements(vertexBuffer);
+
+	vk::MemoryAllocateInfo allocationInfo{
+		memoryRequirements.size,
+		getMemoryIndex(memoryRequirements.memoryTypeBits,
+			vk::MemoryPropertyFlagBits::eHostVisible |
+			vk::MemoryPropertyFlagBits::eHostCoherent)
+	};
+
+	vertexMemory = device.allocateMemory(allocationInfo);
+	device.bindBufferMemory(vertexBuffer, vertexMemory, 0);
+
+	auto data = device.mapMemory(vertexMemory, 0, bufferInfo.size);
+	std::memcpy(data, vertices.data(), bufferInfo.size);
+	device.unmapMemory(vertexMemory);
+}
+
 void createCommandBuffers()
 {
 	vk::CommandBufferAllocateInfo allocationInfo{
@@ -484,29 +558,21 @@ void createCommandBuffers()
 			}
 		};
 
-		vk::Rect2D renderArea{
-			vk::Offset2D{
-				0,
-				0
-			},
-			vk::Extent2D{
-				width,
-				height
-			}
-		};
-
 		vk::RenderPassBeginInfo renderPassBegin{
 			renderPass,
 			framebuffers.at(i),
-			renderArea,
+			swapchainArea,
 			1,
 			&clearColor
 		};
 
+		vk::DeviceSize offset = 0;
+
 		commandBuffers.at(i).begin(commandBufferBegin);
 		commandBuffers.at(i).beginRenderPass(renderPassBegin, vk::SubpassContents::eInline);
 		commandBuffers.at(i).bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
-		commandBuffers.at(i).draw(3, 1, 0, 0);
+		commandBuffers.at(i).bindVertexBuffers(0, 1, &vertexBuffer, &offset);
+		commandBuffers.at(i).draw(vertices.size(), 1, 0, 0);
 		commandBuffers.at(i).endRenderPass();
 		commandBuffers.at(i).end();
 	}
@@ -567,6 +633,7 @@ void setup()
 	createShaderModules();
 	createGraphicsPipeline();
 	createFramebuffers();
+	createVertexBuffers();
 	createCommandBuffers();
 	createSyncObject();
 }
@@ -574,14 +641,16 @@ void setup()
 void clean()
 {
 	cleanupSwapchain();
-	device.destroyShaderModule(fragmentShader);
-	device.destroyShaderModule(vertexShader);
 	for (uint32_t i = 0; i < syncLimit; i++)
 	{
 		device.destroySemaphore(renderSemaphores.at(i));
 		device.destroySemaphore(imageSemaphores.at(i));
 		device.destroyFence(frameFences.at(i));
 	}
+	device.destroyShaderModule(fragmentShader);
+	device.destroyShaderModule(vertexShader);
+	device.destroyBuffer(vertexBuffer);
+	device.freeMemory(vertexMemory);
 	device.destroyCommandPool(commandPool);
 	device.destroy();
 	instance.destroySurfaceKHR(surface);
