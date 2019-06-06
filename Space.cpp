@@ -33,6 +33,7 @@ vk::ShaderModule vertexShader, fragmentShader;
 vk::PipelineLayout pipelineLayout;
 vk::Pipeline pipeline;
 std::vector<Vertex> vertices;
+std::vector<uint32_t> indices;
 vk::Buffer vertexBuffer, indexBuffer;
 vk::DeviceMemory vertexMemory, indexMemory;
 std::vector<vk::Framebuffer> framebuffers;
@@ -194,7 +195,7 @@ void createSwapchain()
 			height
 		}
 	};
-	
+
 	bool mailbox = false;
 	for (auto& presentMode : presentModes)
 		if (presentMode == vk::PresentModeKHR::eMailbox)
@@ -497,37 +498,102 @@ uint32_t getMemoryIndex(uint32_t filter, vk::MemoryPropertyFlags flags)
 	return std::numeric_limits<uint32_t>::max();
 }
 
+vk::CommandBuffer beginSingleTimeCommand()
+{
+	vk::CommandBufferAllocateInfo allocationInfo{
+		commandPool,
+		vk::CommandBufferLevel::ePrimary,
+		1
+	};
+
+	vk::CommandBufferBeginInfo commandBufferBegin{
+		vk::CommandBufferUsageFlagBits::eOneTimeSubmit
+	};
+
+	auto commandBuffer = device.allocateCommandBuffers(allocationInfo).at(0);
+	commandBuffer.begin(commandBufferBegin);
+	return commandBuffer;
+}
+
+void endSingleTimeCommand(vk::CommandBuffer& commandBuffer)
+{
+	commandBuffer.end();
+
+	vk::SubmitInfo submitInfo{
+		0,
+		nullptr,
+		nullptr,
+		1,
+		&commandBuffer,
+		0,
+		nullptr
+	};
+
+	queue.submit(1, &submitInfo, nullptr);
+	queue.waitIdle();
+	device.freeCommandBuffers(commandPool, 1, &commandBuffer);
+}
+
+void copyBuffer(vk::Buffer& source, vk::Buffer& destination, vk::DeviceSize size)
+{
+	auto commandBuffer = beginSingleTimeCommand();
+
+	vk::BufferCopy region{
+		0,
+		0,
+		size
+	};
+
+	commandBuffer.copyBuffer(source, destination, 1, &region);
+	endSingleTimeCommand(commandBuffer);
+}
+
+void createBuffer(vk::Buffer& buffer, vk::DeviceMemory& memory, vk::DeviceSize size,
+	vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties)
+{
+	vk::BufferCreateInfo bufferInfo{
+		vk::BufferCreateFlags(),
+		size,
+		usage,
+		vk::SharingMode::eExclusive,
+		0,
+		nullptr
+	};
+
+	buffer = device.createBuffer(bufferInfo);
+	auto requirements = device.getBufferMemoryRequirements(buffer);
+
+	vk::MemoryAllocateInfo allocationInfo{
+		requirements.size,
+		getMemoryIndex(requirements.memoryTypeBits, properties)
+	};
+
+	memory = device.allocateMemory(allocationInfo);
+	device.bindBufferMemory(buffer, memory, 0);
+}
+
 void createVertexBuffers()
 {
 	vertices.emplace_back(Vertex{ { 0.0f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f} });
 	vertices.emplace_back(Vertex{ { 0.5f,  0.5f, 0.0f}, {0.0f, 1.0f, 0.0f} });
 	vertices.emplace_back(Vertex{ {-0.5f,  0.5f, 0.0f}, {0.0f, 0.0f, 1.0f} });
 
-	vk::BufferCreateInfo bufferInfo{
-		vk::BufferCreateFlags(),
-		vertices.size() * sizeof(Vertex),
-		vk::BufferUsageFlagBits::eVertexBuffer,
-		vk::SharingMode::eExclusive,
-		0,
-		nullptr
-	};
+	vk::Buffer stagingBuffer;
+	vk::DeviceMemory stagingMemory;
+	auto size = vertices.size() * sizeof(Vertex);
 
-	vertexBuffer = device.createBuffer(bufferInfo);
-	auto memoryRequirements = device.getBufferMemoryRequirements(vertexBuffer);
+	createBuffer(stagingBuffer, stagingMemory, size, vk::BufferUsageFlagBits::eTransferSrc,
+		vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+	createBuffer(vertexBuffer, vertexMemory, size, vk::BufferUsageFlagBits::eTransferDst |
+		vk::BufferUsageFlagBits::eVertexBuffer, vk::MemoryPropertyFlagBits::eDeviceLocal);
 
-	vk::MemoryAllocateInfo allocationInfo{
-		memoryRequirements.size,
-		getMemoryIndex(memoryRequirements.memoryTypeBits,
-			vk::MemoryPropertyFlagBits::eHostVisible |
-			vk::MemoryPropertyFlagBits::eHostCoherent)
-	};
+	auto data = device.mapMemory(stagingMemory, 0, size);
+	std::memcpy(data, vertices.data(), size);
+	device.unmapMemory(stagingMemory);
 
-	vertexMemory = device.allocateMemory(allocationInfo);
-	device.bindBufferMemory(vertexBuffer, vertexMemory, 0);
-
-	auto data = device.mapMemory(vertexMemory, 0, bufferInfo.size);
-	std::memcpy(data, vertices.data(), bufferInfo.size);
-	device.unmapMemory(vertexMemory);
+	copyBuffer(stagingBuffer, vertexBuffer, size);
+	device.destroyBuffer(stagingBuffer);
+	device.freeMemory(stagingMemory);
 }
 
 void createCommandBuffers()
@@ -709,7 +775,8 @@ void draw()
 
 		try {
 			queue.presentKHR(presentInfo);
-		} catch (vk::OutOfDateKHRError error) {
+		}
+		catch (vk::OutOfDateKHRError error) {
 			recreateSwapchain();
 		}
 
