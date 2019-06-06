@@ -572,26 +572,42 @@ void createBuffer(vk::Buffer& buffer, vk::DeviceMemory& memory, vk::DeviceSize s
 	device.bindBufferMemory(buffer, memory, 0);
 }
 
-void createVertexBuffers()
+void createElementBuffers()
 {
-	vertices.emplace_back(Vertex{ { 0.0f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f} });
-	vertices.emplace_back(Vertex{ { 0.5f,  0.5f, 0.0f}, {0.0f, 1.0f, 0.0f} });
+	vertices.emplace_back(Vertex{ {-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f} });
+	vertices.emplace_back(Vertex{ { 0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f} });
 	vertices.emplace_back(Vertex{ {-0.5f,  0.5f, 0.0f}, {0.0f, 0.0f, 1.0f} });
+	vertices.emplace_back(Vertex{ { 0.5f,  0.5f, 0.0f}, {0.0f, 0.0f, 0.0f} });
+
+	indices.emplace_back(0);
+	indices.emplace_back(1);
+	indices.emplace_back(2);
+	indices.emplace_back(1);
+	indices.emplace_back(3);
+	indices.emplace_back(2);
 
 	vk::Buffer stagingBuffer;
 	vk::DeviceMemory stagingMemory;
-	auto size = vertices.size() * sizeof(Vertex);
+	auto vertexSize = vertices.size() * sizeof(Vertex);
+	auto indexSize = indices.size() * sizeof(uint32_t);
 
-	createBuffer(stagingBuffer, stagingMemory, size, vk::BufferUsageFlagBits::eTransferSrc,
+	createBuffer(stagingBuffer, stagingMemory, std::max(vertexSize, indexSize), vk::BufferUsageFlagBits::eTransferSrc,
 		vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-	createBuffer(vertexBuffer, vertexMemory, size, vk::BufferUsageFlagBits::eTransferDst |
+	createBuffer(vertexBuffer, vertexMemory, vertexSize, vk::BufferUsageFlagBits::eTransferDst |
 		vk::BufferUsageFlagBits::eVertexBuffer, vk::MemoryPropertyFlagBits::eDeviceLocal);
+	createBuffer(indexBuffer, indexMemory, indexSize, vk::BufferUsageFlagBits::eTransferDst |
+		vk::BufferUsageFlagBits::eIndexBuffer, vk::MemoryPropertyFlagBits::eDeviceLocal);
 
-	auto data = device.mapMemory(stagingMemory, 0, size);
-	std::memcpy(data, vertices.data(), size);
+	auto data = device.mapMemory(stagingMemory, 0, vertexSize);
+	std::memcpy(data, vertices.data(), vertexSize);
 	device.unmapMemory(stagingMemory);
+	copyBuffer(stagingBuffer, vertexBuffer, vertexSize);
 
-	copyBuffer(stagingBuffer, vertexBuffer, size);
+	data = device.mapMemory(stagingMemory, 0, indexSize);
+	std::memcpy(data, indices.data(), indexSize);
+	device.unmapMemory(stagingMemory);
+	copyBuffer(stagingBuffer, indexBuffer, indexSize);
+
 	device.destroyBuffer(stagingBuffer);
 	device.freeMemory(stagingMemory);
 }
@@ -638,7 +654,8 @@ void createCommandBuffers()
 		commandBuffers.at(i).beginRenderPass(renderPassBegin, vk::SubpassContents::eInline);
 		commandBuffers.at(i).bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
 		commandBuffers.at(i).bindVertexBuffers(0, 1, &vertexBuffer, &offset);
-		commandBuffers.at(i).draw(vertices.size(), 1, 0, 0);
+		commandBuffers.at(i).bindIndexBuffer(indexBuffer, offset, vk::IndexType::eUint32);
+		commandBuffers.at(i).drawIndexed(indices.size(), 1, 0, 0, 0);
 		commandBuffers.at(i).endRenderPass();
 		commandBuffers.at(i).end();
 	}
@@ -699,7 +716,7 @@ void setup()
 	createShaderModules();
 	createGraphicsPipeline();
 	createFramebuffers();
-	createVertexBuffers();
+	createElementBuffers();
 	createCommandBuffers();
 	createSyncObject();
 }
@@ -715,6 +732,8 @@ void clean()
 	}
 	device.destroyShaderModule(fragmentShader);
 	device.destroyShaderModule(vertexShader);
+	device.destroyBuffer(indexBuffer);
+	device.freeMemory(indexMemory);
 	device.destroyBuffer(vertexBuffer);
 	device.freeMemory(vertexMemory);
 	device.destroyCommandPool(commandPool);
