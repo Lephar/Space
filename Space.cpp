@@ -1,14 +1,27 @@
+#include <chrono>
 #include <fstream>
 #include <iostream>
 #include <vulkan/vulkan.hpp>
-
-#include <glm/glm.hpp>
 #include <GLFW/glfw3.h>
+
+#define GLM_FORCE_RADIANS
+#define GLM_FORCE_RIGHT_HANDED
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 struct Vertex
 {
 	glm::vec3 pos;
 	glm::vec3 col;
+};
+
+struct Transformation
+{
+	glm::mat4 model;
+	glm::mat4 view;
+	glm::mat4 projection;
 };
 
 GLFWwindow* window;
@@ -30,12 +43,17 @@ std::vector<vk::Image> swapchainImages;
 std::vector<vk::ImageView> swapchainViews;
 vk::RenderPass renderPass;
 vk::ShaderModule vertexShader, fragmentShader;
+vk::DescriptorSetLayout descriptorSetLayout;
+vk::DescriptorPool descriptorPool;
+std::vector<vk::DescriptorSet> descriptorSets;
 vk::PipelineLayout pipelineLayout;
 vk::Pipeline pipeline;
 std::vector<Vertex> vertices;
 std::vector<uint32_t> indices;
 vk::Buffer vertexBuffer, indexBuffer;
 vk::DeviceMemory vertexMemory, indexMemory;
+std::vector<vk::Buffer> uniformBuffers;
+std::vector<vk::DeviceMemory> uniformMemories;
 std::vector<vk::Framebuffer> framebuffers;
 std::vector<vk::CommandBuffer> commandBuffers;
 uint32_t syncLimit;
@@ -134,7 +152,7 @@ void initializeBase()
 		&deviceFeatures
 	};
 
-	vk::CommandPoolCreateInfo poolInfo{
+	vk::CommandPoolCreateInfo commandInfo{
 		vk::CommandPoolCreateFlags(),
 		queueIndex
 	};
@@ -143,7 +161,7 @@ void initializeBase()
 	physicalDevice.getQueueFamilyProperties();
 	device = physicalDevice.createDevice(deviceInfo);
 	queue = device.getQueue(queueIndex, 0);
-	commandPool = device.createCommandPool(poolInfo);
+	commandPool = device.createCommandPool(commandInfo);
 }
 
 vk::ImageView createImageView(vk::Image image, uint32_t levels, vk::Format format, vk::ImageAspectFlags flags)
@@ -307,6 +325,24 @@ void createShaderModules()
 	fragmentShader = loadShader("data/frag.spv");
 }
 
+void createDescriptorSetLayout()
+{
+	vk::DescriptorSetLayoutBinding uniformBinding{
+		0,
+		vk::DescriptorType::eUniformBuffer,
+		1,
+		vk::ShaderStageFlagBits::eVertex
+	};
+
+	vk::DescriptorSetLayoutCreateInfo layoutInfo{
+		vk::DescriptorSetLayoutCreateFlags(),
+		1,
+		&uniformBinding
+	};
+
+	descriptorSetLayout = device.createDescriptorSetLayout(layoutInfo);
+}
+
 void createGraphicsPipeline()
 {
 	vk::VertexInputBindingDescription bindingDescription{
@@ -415,8 +451,8 @@ void createGraphicsPipeline()
 
 	vk::PipelineLayoutCreateInfo pipelineLayoutInfo{
 		vk::PipelineLayoutCreateFlags(),
-		0,
-		nullptr,
+		1,
+		&descriptorSetLayout,
 		0,
 		nullptr
 	};
@@ -612,6 +648,69 @@ void createElementBuffers()
 	device.freeMemory(stagingMemory);
 }
 
+void createUniformBuffers()
+{
+	uniformBuffers.resize(swapchainImages.size());
+	uniformMemories.resize(swapchainImages.size());
+
+	for (uint32_t i = 0; i < uniformBuffers.size(); i++)
+		createBuffer(uniformBuffers.at(i), uniformMemories.at(i), sizeof(Transformation),
+			vk::BufferUsageFlagBits::eUniformBuffer, vk::MemoryPropertyFlagBits::eHostVisible |
+			vk::MemoryPropertyFlagBits::eHostCoherent);
+}
+
+void createDescriptors()
+{
+	vk::DescriptorPoolSize uniformSize{
+		vk::DescriptorType::eUniformBuffer,
+		static_cast<uint32_t>(swapchainImages.size())
+	};
+
+	vk::DescriptorPoolCreateInfo descriptorInfo{
+		vk::DescriptorPoolCreateFlags(),
+		static_cast<uint32_t>(swapchainImages.size()),
+		1,
+		&uniformSize
+	};
+
+	descriptorPool = device.createDescriptorPool(descriptorInfo);
+
+	std::vector<vk::DescriptorSetLayout> layouts{
+		static_cast<uint32_t>(swapchainImages.size()),
+		descriptorSetLayout
+	};
+
+	vk::DescriptorSetAllocateInfo allocationInfo{
+		descriptorPool,
+		static_cast<uint32_t>(layouts.size()),
+		layouts.data()
+	};
+
+	descriptorSets = device.allocateDescriptorSets(allocationInfo);
+
+	for (uint32_t i = 0; i < descriptorSets.size(); i++)
+	{
+		vk::DescriptorBufferInfo bufferInfo{
+			uniformBuffers.at(i),
+			0,
+			sizeof(Transformation)
+		};
+
+		vk::WriteDescriptorSet descriptorWrite{
+			descriptorSets.at(i),
+			0,
+			0,
+			1,
+			vk::DescriptorType::eUniformBuffer,
+			nullptr,
+			&bufferInfo,
+			nullptr
+		};
+
+		device.updateDescriptorSets(1, &descriptorWrite, 0, nullptr);
+	}
+}
+
 void createCommandBuffers()
 {
 	vk::CommandBufferAllocateInfo allocationInfo{
@@ -655,6 +754,8 @@ void createCommandBuffers()
 		commandBuffers.at(i).bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
 		commandBuffers.at(i).bindVertexBuffers(0, 1, &vertexBuffer, &offset);
 		commandBuffers.at(i).bindIndexBuffer(indexBuffer, offset, vk::IndexType::eUint32);
+		commandBuffers.at(i).bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout,
+			0, 1, descriptorSets.data(), 0, nullptr);
 		commandBuffers.at(i).drawIndexed(indices.size(), 1, 0, 0, 0);
 		commandBuffers.at(i).endRenderPass();
 		commandBuffers.at(i).end();
@@ -687,6 +788,13 @@ void createSyncObject()
 void cleanupSwapchain()
 {
 	device.freeCommandBuffers(commandPool, commandBuffers.size(), commandBuffers.data());
+	device.freeDescriptorSets(descriptorPool, descriptorSets.size(), descriptorSets.data());
+	device.destroyDescriptorPool(descriptorPool);
+	for (uint32_t i = 0; i < uniformBuffers.size(); i++)
+	{
+		device.destroyBuffer(uniformBuffers.at(i));
+		device.freeMemory(uniformMemories.at(i));
+	}
 	for (auto& framebuffer : framebuffers)
 		device.destroyFramebuffer(framebuffer);
 	device.destroyPipeline(pipeline);
@@ -705,6 +813,8 @@ void recreateSwapchain()
 	createRenderPass();
 	createGraphicsPipeline();
 	createFramebuffers();
+	createUniformBuffers();
+	createDescriptors();
 	createCommandBuffers();
 }
 
@@ -714,9 +824,12 @@ void setup()
 	createSwapchain();
 	createRenderPass();
 	createShaderModules();
+	createDescriptorSetLayout();
 	createGraphicsPipeline();
 	createFramebuffers();
 	createElementBuffers();
+	createUniformBuffers();
+	createDescriptors();
 	createCommandBuffers();
 	createSyncObject();
 }
@@ -736,6 +849,7 @@ void clean()
 	device.freeMemory(indexMemory);
 	device.destroyBuffer(vertexBuffer);
 	device.freeMemory(vertexMemory);
+	device.destroyDescriptorSetLayout(descriptorSetLayout);
 	device.destroyCommandPool(commandPool);
 	device.destroy();
 	instance.destroySurfaceKHR(surface);
@@ -743,6 +857,24 @@ void clean()
 	instance.destroy();
 	glfwDestroyWindow(window);
 	glfwTerminate();
+}
+
+void updateUniformBuffer(uint32_t index)
+{
+	static auto startTime = std::chrono::high_resolution_clock::now();
+	auto currentTime = std::chrono::high_resolution_clock::now();
+	float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
+
+	Transformation transformation{
+		glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, -1.0f)),
+		glm::lookAt(glm::vec3(-2.0f, -2.0f, -2.0f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, -1.0f)),
+		glm::perspective(glm::radians(45.0f), width / (float)height, 0.1f, 10.0f)
+	};
+	transformation.projection[1][1] *= -1;
+
+	auto data = device.mapMemory(uniformMemories.at(index), 0, sizeof(Transformation));
+	std::memcpy(data, &transformation, sizeof(Transformation));
+	device.unmapMemory(uniformMemories.at(index));
 }
 
 void draw()
@@ -765,6 +897,7 @@ void draw()
 		}
 
 		imageIndex = acquireResult.value;
+		updateUniformBuffer(imageIndex);
 
 		vk::PipelineStageFlags waitStages[]{
 			vk::PipelineStageFlagBits::eColorAttachmentOutput

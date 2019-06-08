@@ -1,12 +1,19 @@
 #version 460
 #extension GL_ARB_separate_shader_objects: enable
 
-layout(location = 0) in vec2 inPosition;
-layout(location = 1) in vec3 inColor;
+layout(binding = 0) uniform Transformation {
+    mat4 model;
+    mat4 view;
+    mat4 projection;
+} transformation;
 
-layout(location = 0) out vec3 fragColor;
+layout(location = 0) in vec3 inputPosition;
+layout(location = 1) in vec3 inputColor;
 
-void main() {
-    gl_Position = vec4(inPosition, 0.0, 1.0);
-    fragColor = inColor;
+layout(location = 0) out vec3 outputColor;
+
+void main()
+{
+    gl_Position = transformation.projection * transformation.view * transformation.model * vec4(inputPosition, 1.0);
+    outputColor = inputColor;
 }
