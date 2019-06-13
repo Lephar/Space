@@ -2,12 +2,12 @@ CC = clang++
 SLC = glslc
 CFLAGS = -std=c++17 -march=native -Ofast -Wall -Wextra
 LDLIBS = -lglfw -lvulkan
-SOURCES = Space.cpp
+SOURCES = space.cpp
 VSHADES = shaders/shader.vert
 FSHADES = shaders/shader.frag
-OBJECTS = Space.o
-VMODS = data/vert.spv
-FMODS = data/frag.spv
+OBJECTS = space.o
+VMODS = shaders/vert.spv
+FMODS = shaders/frag.spv
 
 all: $(OBJECTS) $(VMODS) $(FMODS)
 

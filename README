@@ -1,0 +1,12 @@
+First attempt on Non-Euclidean world engines
+
+Dependencies are:
+ -Vulkan compatible GPU
+ -Clang with C++17 support
+ -GLFW for window
+ -GLM for math
+ -SPIR-V compiler
+
+To compile and run:
+ make
+ ./space.o

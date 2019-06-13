@@ -321,8 +321,8 @@ vk::ShaderModule loadShader(std::string path)
 
 void createShaderModules()
 {
-	vertexShader = loadShader("data/vert.spv");
-	fragmentShader = loadShader("data/frag.spv");
+	vertexShader = loadShader("shaders/vert.spv");
+	fragmentShader = loadShader("shaders/frag.spv");
 }
 
 void createDescriptorSetLayout()
@@ -667,7 +667,7 @@ void createDescriptors()
 	};
 
 	vk::DescriptorPoolCreateInfo descriptorInfo{
-		vk::DescriptorPoolCreateFlags(),
+		vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
 		static_cast<uint32_t>(swapchainImages.size()),
 		1,
 		&uniformSize
