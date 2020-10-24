@@ -2,10 +2,10 @@ CC = clang++
 SLC = glslc
 CFLAGS = -std=c++17 -march=native -Ofast -Wall -Wextra
 LDLIBS = -lglfw -lvulkan
-SOURCES = space.cpp
+SOURCES = triangle.cpp
 VSHADES = shaders/shader.vert
 FSHADES = shaders/shader.frag
-OBJECTS = space.o
+OBJECTS = triangle
 VMODS = shaders/vert.spv
 FMODS = shaders/frag.spv
 

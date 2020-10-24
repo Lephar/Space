@@ -1,4 +1,5 @@
-First attempt on Non-Euclidean world engines
+Triangle as a Vulkan HPP practice
+(Deprecated since vk::DispatchLoaderDynamic behaviour changed)
 
 Dependencies are:
  -Vulkan compatible GPU
@@ -9,4 +10,4 @@ Dependencies are:
 
 To compile and run:
  make
- ./space.o
+ ./triangle
