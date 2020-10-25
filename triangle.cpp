@@ -79,7 +79,7 @@ void initializeBase()
 
 	glfwInit();
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-	window = glfwCreateWindow(static_cast<int>(width), static_cast<int>(height), "Space", NULL, NULL);
+	window = glfwCreateWindow(static_cast<int>(width), static_cast<int>(height), "Triangle", NULL, NULL);
 
 	uint32_t extensionCount = 0;
 	const char** extensionNames = glfwGetRequiredInstanceExtensions(&extensionCount);
@@ -89,11 +89,11 @@ void initializeBase()
 	extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
 	vk::ApplicationInfo applicationInfo{
-		"Space",
+		"Triangle",
 		VK_MAKE_VERSION(1, 0, 0),
 		"Mungui Engine",
 		VK_MAKE_VERSION(1, 0, 0),
-		VK_API_VERSION_1_1
+		VK_API_VERSION_1_2
 	};
 
 	vk::DebugUtilsMessengerCreateInfoEXT messengerInfo{
@@ -120,7 +120,7 @@ void initializeBase()
 	instanceInfo.setPNext(&messengerInfo);
 
 	instance = vk::createInstance(instanceInfo);
-	loader = vk::DispatchLoaderDynamic{ instance };
+	loader = vk::DispatchLoaderDynamic{ instance, vkGetInstanceProcAddr };
 	messenger = instance.createDebugUtilsMessengerEXT(messengerInfo, nullptr, loader);
 	if (!window || glfwCreateWindowSurface(static_cast<VkInstance>(instance), window,
 		NULL, reinterpret_cast<VkSurfaceKHR*>(&surface)) != VK_SUCCESS)
@@ -158,7 +158,7 @@ void initializeBase()
 	};
 
 	physicalDevice = instance.enumeratePhysicalDevices().at(deviceIndex);
-	physicalDevice.getQueueFamilyProperties();
+	static_cast<void>(physicalDevice.getQueueFamilyProperties());
 	device = physicalDevice.createDevice(deviceInfo);
 	queue = device.getQueue(queueIndex, 0);
 	commandPool = device.createCommandPool(commandInfo);
@@ -199,7 +199,7 @@ void createSwapchain()
 
 	auto surfaceCapabilities = physicalDevice.getSurfaceCapabilitiesKHR(surface);
 	auto presentModes = physicalDevice.getSurfacePresentModesKHR(surface);
-	physicalDevice.getSurfaceFormatsKHR(surface);
+	static_cast<void>(physicalDevice.getSurfaceFormatsKHR(surface));
 	physicalDevice.getSurfaceSupportKHR(queueIndex, surface);
 
 	swapchainFormat = vk::Format::eB8G8R8A8Unorm;
@@ -500,7 +500,7 @@ void createGraphicsPipeline()
 		0
 	};
 
-	pipeline = device.createGraphicsPipeline(nullptr, graphicsPipelineInfo);
+	pipeline = device.createGraphicsPipeline(nullptr, graphicsPipelineInfo).value;
 }
 
 void createFramebuffers()
@@ -565,7 +565,7 @@ void endSingleTimeCommand(vk::CommandBuffer& commandBuffer)
 		nullptr
 	};
 
-	queue.submit(1, &submitInfo, nullptr);
+	static_cast<void>(queue.submit(1, &submitInfo, nullptr));
 	queue.waitIdle();
 	device.freeCommandBuffers(commandPool, 1, &commandBuffer);
 }
@@ -644,8 +644,8 @@ void createElementBuffers()
 	device.unmapMemory(stagingMemory);
 	copyBuffer(stagingBuffer, indexBuffer, indexSize);
 
-	device.destroyBuffer(stagingBuffer);
-	device.freeMemory(stagingMemory);
+	device.destroyBuffer(stagingBuffer, nullptr);
+	device.freeMemory(stagingMemory, nullptr);
 }
 
 void createUniformBuffers()
@@ -789,20 +789,20 @@ void cleanupSwapchain()
 {
 	device.freeCommandBuffers(commandPool, commandBuffers.size(), commandBuffers.data());
 	device.freeDescriptorSets(descriptorPool, descriptorSets.size(), descriptorSets.data());
-	device.destroyDescriptorPool(descriptorPool);
+	device.destroyDescriptorPool(descriptorPool, nullptr);
 	for (uint32_t i = 0; i < uniformBuffers.size(); i++)
 	{
-		device.destroyBuffer(uniformBuffers.at(i));
-		device.freeMemory(uniformMemories.at(i));
+		device.destroyBuffer(uniformBuffers.at(i), nullptr);
+		device.freeMemory(uniformMemories.at(i), nullptr);
 	}
 	for (auto& framebuffer : framebuffers)
-		device.destroyFramebuffer(framebuffer);
-	device.destroyPipeline(pipeline);
-	device.destroyPipelineLayout(pipelineLayout);
-	device.destroyRenderPass(renderPass);
+		device.destroyFramebuffer(framebuffer, nullptr);
+	device.destroyPipeline(pipeline, nullptr);
+	device.destroyPipelineLayout(pipelineLayout, nullptr);
+	device.destroyRenderPass(renderPass, nullptr);
 	for (auto& swapchainView : swapchainViews)
-		device.destroyImageView(swapchainView);
-	device.destroySwapchainKHR(swapchain);
+		device.destroyImageView(swapchainView, nullptr);
+	device.destroySwapchainKHR(swapchain, nullptr);
 }
 
 void recreateSwapchain()
@@ -839,22 +839,22 @@ void clean()
 	cleanupSwapchain();
 	for (uint32_t i = 0; i < syncLimit; i++)
 	{
-		device.destroySemaphore(renderSemaphores.at(i));
-		device.destroySemaphore(imageSemaphores.at(i));
-		device.destroyFence(frameFences.at(i));
+		device.destroySemaphore(renderSemaphores.at(i), nullptr);
+		device.destroySemaphore(imageSemaphores.at(i), nullptr);
+		device.destroyFence(frameFences.at(i), nullptr);
 	}
-	device.destroyShaderModule(fragmentShader);
-	device.destroyShaderModule(vertexShader);
-	device.destroyBuffer(indexBuffer);
-	device.freeMemory(indexMemory);
-	device.destroyBuffer(vertexBuffer);
-	device.freeMemory(vertexMemory);
-	device.destroyDescriptorSetLayout(descriptorSetLayout);
-	device.destroyCommandPool(commandPool);
-	device.destroy();
-	instance.destroySurfaceKHR(surface);
+	device.destroyShaderModule(fragmentShader, nullptr);
+	device.destroyShaderModule(vertexShader, nullptr);
+	device.destroyBuffer(indexBuffer, nullptr);
+	device.freeMemory(indexMemory, nullptr);
+	device.destroyBuffer(vertexBuffer, nullptr);
+	device.freeMemory(vertexMemory, nullptr);
+	device.destroyDescriptorSetLayout(descriptorSetLayout, nullptr);
+	device.destroyCommandPool(commandPool, nullptr);
+	device.destroy(nullptr);
+	instance.destroySurfaceKHR(surface, nullptr);
 	instance.destroyDebugUtilsMessengerEXT(messenger, nullptr, loader);
-	instance.destroy();
+	instance.destroy(nullptr);
 	glfwDestroyWindow(window);
 	glfwTerminate();
 }
@@ -885,7 +885,7 @@ void draw()
 	{
 		glfwPollEvents();
 
-		device.waitForFences(1, &frameFences.at(syncIndex), VK_TRUE, std::numeric_limits<uint64_t>::max());
+		static_cast<void>(device.waitForFences(1, &frameFences.at(syncIndex), VK_TRUE, std::numeric_limits<uint64_t>::max()));
 		auto acquireResult = device.acquireNextImageKHR(swapchain, std::numeric_limits<uint64_t>::max(),
 			imageSemaphores.at(syncIndex), nullptr);
 
@@ -922,11 +922,11 @@ void draw()
 			nullptr
 		};
 
-		device.resetFences(1, &frameFences.at(syncIndex));
-		queue.submit(1, &submitInfo, frameFences.at(syncIndex));
+		static_cast<void>(device.resetFences(1, &frameFences.at(syncIndex)));
+		static_cast<void>(queue.submit(1, &submitInfo, frameFences.at(syncIndex)));
 
 		try {
-			queue.presentKHR(presentInfo);
+			static_cast<void>(queue.presentKHR(presentInfo));
 		}
 		catch (vk::OutOfDateKHRError error) {
 			recreateSwapchain();

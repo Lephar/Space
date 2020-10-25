@@ -1,6 +1,6 @@
 CC = clang++
 SLC = glslc
-CFLAGS = -std=c++17 -march=native -Ofast -Wall -Wextra
+CFLAGS = -std=c++17 -O2 -Wall -Wextra
 LDLIBS = -lglfw -lvulkan
 SOURCES = triangle.cpp
 VSHADES = shaders/shader.vert

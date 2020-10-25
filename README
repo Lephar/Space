@@ -1,5 +1,4 @@
 Triangle as a Vulkan HPP practice
-(Deprecated since vk::DispatchLoaderDynamic behaviour changed)
 
 Dependencies are:
  -Vulkan compatible GPU
